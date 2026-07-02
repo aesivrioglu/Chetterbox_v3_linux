@@ -1,0 +1,29 @@
+# XTTS v2 (Coqui) streaming TTFB — AYRI venv gerektirir
+# ---------------------------------------------------------------------------
+# ⚠️ chatterbox ile AYNI venv'e KURMA: torch/transformers/numpy pin'leri çakışır.
+#    Chatterbox -> .venv (requirements-chatterbox.txt)
+#    XTTS v2    -> .venv-xtts (BU dosya)
+#
+# LINUX + RTX 3090 KURULUMU:
+#   python3.11 -m venv .venv-xtts && source .venv-xtts/bin/activate
+#   pip install -U pip
+#   pip install -r requirements-xtts.txt
+#   export COQUI_TOS_AGREED=1        # (script zaten ayarlıyor; CPML kabulü — TİCARİ DEĞİL)
+#
+# NOT (paket): 'coqui-tts', Coqui kapandıktan sonra bakımı süren XTTS fork'udur
+# (github.com/idiap/coqui-ai-TTS). Hâlâ `import TTS` olarak gelir ve MODERN
+# torch/transformers ile uyumludur. Eski, terk edilmiş 'TTS' (0.22) paketini
+# KURMA — yeni torch ile kırılır. coqui-tts kendi torch/transformers pin'lerini
+# pip'e çözdürür; sürümleri elle sabitleyip ÇAKIŞMA yaratma.
+#
+# torch/torchaudio: Linux'ta coqui-tts CUDA (cu12x) wheel'i çeker; RTX 3090
+# (Ampere) uyumludur. Yanlışlıkla CPU wheel gelirse:
+#   pip install --force-reinstall torch torchaudio \
+#       --index-url https://download.pytorch.org/whl/cu124
+# ---------------------------------------------------------------------------
+
+coqui-tts>=0.24.0
+
+# --- ölçüm/kalite araçları (chatterbox tarafıyla aynı) ---
+faster-whisper
+Levenshtein
