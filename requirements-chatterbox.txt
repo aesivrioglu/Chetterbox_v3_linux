@@ -1,0 +1,31 @@
+# Chatterbox streaming ölçümü — DOĞRULANMIŞ sürüm seti
+# (bu Windows .venv'inde import zinciri sorunsuz çalışıyor; chatterbox-tts 0.1.7'nin
+#  sabitlediği sürümlerle aynıdır -> Colab'daki çakışmaların panzehiri budur)
+#
+# LINUX + RTX 3090 KURULUMU:
+#   python3.11 -m venv .venv && source .venv/bin/activate
+#   pip install -U pip
+#   pip install -r requirements-chatterbox.txt
+#
+# torch/torchaudio: Linux'ta PyPI varsayılanı zaten CUDA (cu124) wheel'idir ve
+# RTX 3090 (Ampere) ile uyumludur. Yanlışlıkla CPU wheel gelirse:
+#   pip install --force-reinstall torch==2.6.0 torchaudio==2.6.0 \
+#       --index-url https://download.pytorch.org/whl/cu124
+
+chatterbox-tts==0.1.7
+
+# --- chatterbox-tts 0.1.7'nin sabitlediği çekirdek bağımlılıklar ---
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0     # torch 2.6.0 ile EŞLEŞEN sürüm; yanlış sürüm "torchvision::nms does not exist" verir
+transformers==5.2.0
+diffusers==0.29.0
+safetensors==0.5.3
+numpy==1.26.4
+pykakasi==2.3.0
+pyloudnorm==0.2.0
+spacy-pkuseg==1.0.1
+
+# --- ölçüm/kalite araçları ---
+faster-whisper==1.2.1
+Levenshtein
