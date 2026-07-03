@@ -1,45 +1,63 @@
 """
 ============================================================================
-Chatterbox Multilingual TTS (v3) — YEREL (Linux + RTX/CUDA) STREAMING scripti (v2)
+Chatterbox Multilingual TTS (v3) — YEREL (Linux + RTX/CUDA) STREAMING scripti (v3)
 ============================================================================
 
 AMAÇ
   chatterbox_colab_stream.py ile BİREBİR AYNI ölçüm mantığı; tek fark ortam:
-  bu script arayüzsüz (headless) bir Linux makinede, yerel RTX GPU (ör. RTX 3090)
-  üzerinde çalışır. TTFB ve tam süre AYNI birimle (ilk FIRST_AUDIO_MS ms ses)
-  ölçülür -> Colab (T4/L4/A100) ve RTX 3090 sonuçları elmayla elma kıyaslanır.
+  bu script arayüzsüz (headless) bir Linux makinede, yerel RTX GPU
+  (RTX 3090 / 4090) üzerinde çalışır. TTFB ve tam süre AYNI birimle (ilk
+  FIRST_AUDIO_MS ms ses) ölçülür -> Colab ve RTX sonuçları elmayla elma.
 
-v2 — YAPISAL OPTİMİZASYONLAR (gerekçe ve ayrıntı: README-chatterbox.md)
-  T4 stok ölçümü (medyan 1051 ms) TTFB bütçesini kabaca şöyle dağıttı:
-  ~%60 s3gen vocode, ~%25 T3 decode, ~%15 prefill. Bu sürüm en büyük kalemi
-  hedefleyen ÜÇ yapısal optimizasyon ekler (bölüm 0.5'teki bayraklar):
-    1) OPT_REF_TRIM_SEC : s3gen'in HER parçada baştan işleyip attığı 10 sn'lik
-       referans prompt'unu 3 sn'ye indirir (CFM dizisi ~510 -> ~170 frame).
-    2) OPT_CFM_STEPS    : CFM (flow matching) Euler adım sayısı 10 -> 6.
-    3) OPT_FLOW_AUTOCAST: CFM+encoder fp16/bf16 çalışır (HiFT vocoder fp32 kalır).
-       RTX 3090 = Ampere -> bf16 seçilir; ayrıca allow_tf32 sayesinde fp32
-       matmul/conv'lar da tensor core kullanır (T4'te bu yol YOK).
-  KIYAS BİRİMİ DEĞİŞMEDİ: hâlâ "ilk 200 ms sesin hazır olma süresi" ölçülür —
-  ElevenLabs tarafıyla birebir AYNI miktar ses için. Optimizasyonlar kaliteyi
-  etkileyebileceğinden TTFB'yi HER ZAMAN CER% + out_bench.wav ile birlikte oku.
-  Stok davranışa dönüş: üç bayrağı da None/False yap.
+v2 — YAPISAL HIZ OPTİMİZASYONLARI (bölüm 0.5; gerekçe: README-chatterbox.md)
+    1) OPT_REF_TRIM_SEC : s3gen referans prompt'u 10 sn -> 3 sn (İLK parça).
+    2) OPT_CFM_STEPS    : CFM (flow matching) Euler adımı 10 -> 6 (İLK parça).
+    3) OPT_FLOW_AUTOCAST: CFM+encoder fp16/bf16 çalışır (HiFT fp32 kalır).
+  SONUÇ: RTX 4090'da TTFB medyanı ~140 ms (2026-07) -> ElevenLabs çıtası
+  (~182 ms) GEÇİLDİ. Bu yüzden v3'ün odağı SES KALİTESİ.
+
+v3 — SES KALİTESİ (bölüm 0.6; KIYAS BİRİMİ ve İLK PARÇA HIZ YOLU DEĞİŞMEDİ)
+    4) OPT_REF_PREPROCESS : referans ses modele daha iyi 'yedirilir' — baş/son
+       sessizlik kırpılır, >0.5 sn iç duraklamalar sıkıştırılır, tepe -3 dBFS'e
+       normallenir. 3 sn'lik akustik prompt böylece tamamen GERÇEK konuşmayla
+       dolar (sessizlik prompt bütçesi çalar); x-vector daha temiz klipten çıkar.
+    5) OPT_CTX_TOKENS     : parçalar (ilki hariç) önceki son 16 token'la
+       birlikte vocode edilir, bağlama düşen ses atılır -> parça sınırında
+       tını/zarf sürekliliği (CosyVoice'un streaming yaklaşımı). TTFB'ye etki YOK
+       (ilk parçada bağlam yok).
+    6) OPT_JOINT_FADE_MS  : parça eklerinde 5 ms kosinüs mikro-fade -> HiFT faz
+       süreksizliğinden doğan 'klik'ler yok olur. Gecikme EKLEMEZ (parça
+       uzunlukları değişmez, tutma/bekletme yok).
+    7) OPT_*_REST         : TTFB'yi yalnız İLK parça belirler; SONRAKİ parçalar
+       TAM referans + CFM 10 adımla üretilir (ilk parça v2 hız ayarında kalır).
+       Sesin ~%95'i tam kalite yolundan çıkar; RTF < 1.0 kaldıkça bedavadır.
+    8) OPT_T3_BF16_WEIGHTS: T3 Llama ağırlıkları bf16'ya çevrilir (yalnız
+       Ampere+). Autocast zaten bf16 HESAPLIYORDU; ağırlık da bf16 olunca token
+       başına tekrarlanan fp32->bf16 ağırlık kopyaları kalkar -> decode hızlanır.
+       Örnekleme yine fp32 logits üzerinde yapılır (dağılım pratikte aynı).
+  ÖLÇÜM DİSİPLİNİ: bench turlarında ses SAKLANMAZ (kayıt maliyeti sıfır);
+  ölçüm bitince İSTATİSTİĞE DAHİL OLMAYAN 1 ek koşu out_bench.wav'ı üretir,
+  CER bu kayıttan ölçülür. Görüşme simülasyonu turn_*.wav üretmeye devam eder
+  (oradaki TTFB'ler bilgi amaçlıdır; kıyas bench'i 6. bölümdür).
 
 ADİL KIYAS
-  FIRST_AUDIO_MS, PRESET, CONVERSATION, BENCH_TEXT, RUNS, WARMUP ve
-  optimizasyon bayrakları Colab scripti ile AYNI tutulmuştur. Değiştirirsen
-  üç tarafta da aynı değeri kullan, yoksa kıyas bozulur.
+  FIRST_AUDIO_MS, PRESET, CONVERSATION, BENCH_TEXT, RUNS, WARMUP ve İLK PARÇA
+  bayrakları Colab scripti ile AYNI tutulmuştur. v3 kalite bayrakları ilk parça
+  yoluna dokunmadığından TTFB kıyası bozulmaz; toplam süre/RTF ise REST
+  parçaların daha kaliteli (daha pahalı) üretilmesi yüzünden v2'den yüksektir.
 
 DOĞRULUK: Streaming döngüsü t3.py -> T3.inference() ile BİREBİR aynıdır.
   Tek istisna: top_p=1.0 iken TopP warper matematiksel KİMLİKTİR ve atlanır;
-  örnekleme dağılımı stokla AYNI kalır.
+  örnekleme dağılımı stokla AYNI kalır. v3 kalite katmanları yalnız vocoder
+  (s3gen) tarafına dokunur; T3 token dağılımı değişmez.
 
 ----------------------------------------------------------------------------
-KURULUM (Linux, RTX 3090 — bir kez; ayrıntı için requirements-chatterbox.txt)
+KURULUM (Linux, RTX 3090/4090 — bir kez; ayrıntı için requirements-chatterbox.txt)
 ----------------------------------------------------------------------------
     python3.11 -m venv .venv && source .venv/bin/activate
     pip install -U pip
     pip install -r requirements-chatterbox.txt
-    # RTX 3090 (Ampere) için torch 2.6.0'ın CUDA (cu124) wheel'i uyumludur;
+    # RTX 3090/4090 (Ampere/Ada) için torch 2.6.0'ın CUDA (cu124) wheel'i uyumludur;
     # CPU wheel gelirse:
     #   pip install --force-reinstall torch==2.6.0 torchaudio==2.6.0 \
     #       --index-url https://download.pytorch.org/whl/cu124
@@ -55,6 +73,7 @@ KAPATIR, script stok yola düşerek yine çalışır.
 ----------------------------------------------------------------------------
 """
 import inspect
+import math
 import os
 import statistics
 import time
@@ -80,6 +99,12 @@ OUT_DIR = os.getenv("OUT_DIR", _HERE)                # wav çıktıları buraya
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Ajan preset'i (mtl_tts.generate varsayılanlarıyla uyumlu; sadece exagg/cfg/temp ayarlı)
+# Kalite notu: bu değerler T3 ÖRNEKLEME dağılımını belirler; kıyas sürekliliği
+# için v2 ile aynı bırakıldı. Denemeye değer alternatifler (Chatterbox önerileri):
+#   - referans konuşmacı HIZLI konuşuyorsa cfg_weight'i 0.3'te tut (tempo düzelir),
+#     değilse 0.5 stok değeri referansa bağlılığı artırır.
+#   - temperature 0.6 ajan kararlılığı içindir; 0.8 stok değeri prozodiyi
+#     canlandırır ama CER oynaklığını artırabilir.
 PRESET = dict(exaggeration=0.4, cfg_weight=0.3, temperature=0.6,
               repetition_penalty=1.2, min_p=0.05, top_p=1.0)
 
@@ -109,9 +134,11 @@ CONVERSATION = [
 BENCH_TEXT = CONVERSATION[0]
 
 # ===========================================================================
-# 0.5 YAPISAL OPTİMİZASYON BAYRAKLARI (gerekçeler: README-chatterbox.md)
+# 0.5 YAPISAL HIZ BAYRAKLARI (v2 — gerekçeler: README-chatterbox.md)
 #     Colab scripti ile AYNI değerler — kıyas için. Kıyas birimine DOKUNMAZLAR;
 #     yalnızca aynı 200 ms sesin daha hızlı üretilmesini sağlarlar.
+#     v3'ten itibaren bu ikisi yalnız İLK parçaya uygulanır (REST bayrakları
+#     sonraki parçaları tam kalitede üretir — bölüm 0.6 / 7).
 # ===========================================================================
 # 1) s3gen referans prompt'u (stok: 10 sn). CFM+encoder maliyeti (referans+parça)
 #    dizi uzunluğuyla orantılıdır ve referans kısmı HER parçada yeniden üretilip
@@ -126,7 +153,40 @@ OPT_CFM_STEPS = 6             # None = build varsayılanı (10)
 OPT_FLOW_AUTOCAST = True      # False = stok (s3gen tamamı fp32)
 
 # ===========================================================================
-# 1. CİHAZ + DTYPE (Ampere+ -> bf16, Turing/T4 -> fp16). RTX 3090 = Ampere -> bf16.
+# 0.6 KALİTE BAYRAKLARI (v3 — gerekçeler: README-chatterbox.md)
+#     TTFB'yi yalnız İLK parça belirler; bu bayraklar ilk parçanın HIZ yoluna
+#     dokunmaz. Hepsi bağımsız kapatılabilir.
+# ===========================================================================
+# 4) Referans ön-işleme: baş/son sessizliği kırp, >0.5 sn iç duraklamaları
+#    ~0.25 sn'ye sıkıştır, tepeyi -3 dBFS'e normalle. 3 sn'lik akustik prompt
+#    böylece tamamen gerçek konuşmayla dolar; CFM prompt'u sağlıklı seviyede
+#    olur. Çıktı: OUT_DIR/ref_processed.wav (orijinal dosyaya DOKUNULMAZ).
+OPT_REF_PREPROCESS = True
+# 5) Bağlamlı vocode: her parça (ilki hariç) önceki son N token'la birlikte
+#    CFM'den geçirilir, bağlama düşen ses atılır -> parça sınırında tını/zarf
+#    sürekliliği. Maliyet: parça başına +N token CFM (TTFB'ye etkisi YOK).
+#    0 = kapalı. 4'ün altına indirme: s3gen'in trim_fade bölgesi atılan bağlam
+#    içinde kalmalı, yoksa parça başı fade'i duyulur.
+OPT_CTX_TOKENS = 16
+# 6) Parça eki mikro-fade'i: her ekte önceki parçanın son / yeni parçanın ilk
+#    birkaç ms'ine kosinüs rampası -> HiFT faz süreksizliği 'klik'leri yok olur.
+#    Tutma/bekletme yok -> gecikme eklemez. 0 = kapalı.
+OPT_JOINT_FADE_MS = 5
+# 7) İlk parça hızlı / devamı kaliteli: SONRAKİ parçalar için referans uzunluğu
+#    ve CFM adımı. None = TAM referans / build varsayılanı (10 adım).
+#    T4 gibi yavaş GPU'da RTF > 1.0 olursa bunları v2 değerlerine (3.0 / 6) indir.
+#    Sınırda tını kayması duyarsan ya OPT_REF_TRIM_SEC'i yükselt (TTFB'ye +ms)
+#    ya da OPT_REF_TRIM_SEC_REST = 3.0 yap (iki yol da tutarlılığı artırır).
+OPT_REF_TRIM_SEC_REST = None  # None = TAM referans (ilk parça OPT_REF_TRIM_SEC kullanır)
+OPT_CFM_STEPS_REST    = 10    # ilk parça OPT_CFM_STEPS (6) kullanır
+# 8) T3 Llama ağırlıklarını bf16'ya çevir (yalnız Ampere+ / bf16 yolunda).
+#    Autocast zaten bf16 hesaplıyordu; ağırlık da bf16 olunca token başına
+#    tekrarlanan fp32->bf16 ağırlık kopyaları kalkar -> decode hızlanır.
+#    Örnekleme fp32 logits üzerinde kalır; bf16 yuvarlaması autocast ile aynıdır.
+OPT_T3_BF16_WEIGHTS = True
+
+# ===========================================================================
+# 1. CİHAZ + DTYPE (Ampere+ -> bf16, Turing/T4 -> fp16). RTX 3090/4090 -> bf16.
 # ===========================================================================
 if torch.cuda.is_available():
     device = "cuda"
@@ -148,6 +208,97 @@ def _sync():
         torch.cuda.synchronize()
 
 # ===========================================================================
+# 1.5 REFERANS ÖN-İŞLEME (v3 — 'referansı daha iyi yedir')
+#     Neden: prepare_conditionals akustik prompt'u klibin BAŞINDAN alır ve v2
+#     onu 3 sn'ye kırpar. Baştaki sessizlik / uzun duraklamalar bu bütçeyi
+#     çalar -> prompt yarı boş kalır, tını/prozodi kopyası zayıflar. Ayrıca
+#     CFM prompt mel'i seviyeye duyarlıdır: cılız kayıt cılız çıktı üretir.
+# ===========================================================================
+def _preprocess_ref_wav(src, dst, sil_ratio=0.03, pad_s=0.10,
+                        max_pause_s=0.50, keep_pause_s=0.25, xfade_s=0.010,
+                        peak_dbfs=-3.0):
+    """src'yi temizleyip dst'ye yazar ve dst'yi döndürür; herhangi bir aksilikte
+    (okunamadı, tamamı sessiz, aşırı kısaldı) uyarı basıp src'yi döndürür.
+      1) baş/son sessizlik kırpma  (eşik: tepe çerçeve RMS'inin %3'ü, ~-30 dB)
+      2) >max_pause_s iç duraklamaları keep_pause_s'e sıkıştırma (10 ms crossfade)
+      3) tepe genliği peak_dbfs'e normalleme
+    """
+    try:
+        wav, sr = ta.load(src)
+    except Exception as e:  # noqa: BLE001
+        print(f"[uyarı] referans okunamadı ({e}); orijinal dosya kullanılacak.")
+        return src
+    x = wav.mean(0) if wav.shape[0] > 1 else wav[0]
+    orig_s = x.numel() / sr
+    frame, hop = int(0.02 * sr), int(0.01 * sr)
+    if x.numel() < 2 * frame:
+        return src
+    rms = x.unfold(0, frame, hop).pow(2).mean(1).sqrt()
+    thr = float(rms.max()) * sil_ratio
+    speech = rms > thr
+    if not bool(speech.any()):
+        print("[uyarı] referansta konuşma bulunamadı; orijinal dosya kullanılacak.")
+        return src
+    nz = speech.nonzero().flatten()
+    s0 = max(0, int(nz[0]) * hop - int(pad_s * sr))
+    s1 = min(x.numel(), int(nz[-1]) * hop + frame + int(pad_s * sr))
+    x = x[s0:s1]
+
+    # --- iç duraklamaları sıkıştır (kesim yerlerinde xfade_s crossfade) ---
+    rms = x.unfold(0, frame, hop).pow(2).mean(1).sqrt()
+    speech = rms > thr
+    max_pause_f = max(1, int(max_pause_s * sr / hop))
+    keep_half = int(keep_pause_s * sr / 2)
+    cuts, i, n = [], 0, int(speech.numel())
+    while i < n:
+        if bool(speech[i]):
+            i += 1
+            continue
+        j = i
+        while j < n and not bool(speech[j]):
+            j += 1
+        if (j - i) > max_pause_f:                     # uzun duraklama
+            a = i * hop + keep_half                   # her iki yandan keep_half bırak
+            b = min(x.numel(), j * hop) - keep_half
+            if b - a > int(0.05 * sr):
+                cuts.append((a, b))
+        i = j
+    if cuts:
+        segs, prev = [], 0
+        for a, b in cuts:
+            segs.append(x[prev:a]); prev = b
+        segs.append(x[prev:])
+        xf = int(xfade_s * sr)
+        y = segs[0]
+        for s in segs[1:]:
+            if xf and y.numel() > xf and s.numel() > xf:
+                r = torch.linspace(0.0, 1.0, xf)
+                y = torch.cat([y[:-xf], y[-xf:] * (1 - r) + s[:xf] * r, s[xf:]])
+            else:
+                y = torch.cat([y, s])
+        x = y
+    if x.numel() < sr:                                # <1 sn kaldıysa güvenli taraf
+        print("[uyarı] ön-işleme sonrası referans çok kısaldı; orijinal kullanılacak.")
+        return src
+
+    peak = float(x.abs().max())
+    if peak > 0:
+        x = x * (10 ** (peak_dbfs / 20) / peak)
+    try:
+        ta.save(dst, x.unsqueeze(0), sr)
+    except Exception as e:  # noqa: BLE001
+        print(f"[uyarı] işlenmiş referans yazılamadı ({e}); orijinal kullanılacak.")
+        return src
+    print(f"[bilgi] referans ön-işleme: {orig_s:.1f} sn -> {x.numel() / sr:.1f} sn "
+          f"(baş/son kırpıldı, {len(cuts)} uzun duraklama sıkıştırıldı, "
+          f"tepe {peak_dbfs:.0f} dBFS) -> {dst}")
+    return dst
+
+REF_WAV_EFF = REF_WAV
+if OPT_REF_PREPROCESS and REF_WAV and os.path.exists(REF_WAV):
+    REF_WAV_EFF = _preprocess_ref_wav(REF_WAV, os.path.join(OUT_DIR, "ref_processed.wav"))
+
+# ===========================================================================
 # 2. MODEL + REFERANS (bir kez)
 # ===========================================================================
 # t3_model="v3" bazı chatterbox build'lerinde YOK -> imzayı kontrol et, varsa geç.
@@ -157,11 +308,11 @@ else:
     print("[uyarı] Bu chatterbox build'i t3_model parametresini desteklemiyor; "
           "varsayılan multilingual model yükleniyor.")
     model = ChatterboxMultilingualTTS.from_pretrained(device=device)
-if REF_WAV and os.path.exists(REF_WAV):
-    model.prepare_conditionals(REF_WAV, exaggeration=PRESET["exaggeration"])
-    print(f"[bilgi] Referans '{REF_WAV}' bir kez gömüldü.")
+if REF_WAV_EFF and os.path.exists(REF_WAV_EFF):
+    model.prepare_conditionals(REF_WAV_EFF, exaggeration=PRESET["exaggeration"])
+    print(f"[bilgi] Referans '{REF_WAV_EFF}' bir kez gömüldü.")
 else:
-    print(f"[uyarı] '{REF_WAV}' yok; varsayılan ses (conds.pt) kullanılacak.")
+    print(f"[uyarı] '{REF_WAV_EFF}' yok; varsayılan ses (conds.pt) kullanılacak.")
 
 # ===========================================================================
 # 2.5 OPTİMİZASYONLARI BUILD'E GÖRE ETKİNLEŞTİR (sürüm-güvenli)
@@ -174,11 +325,12 @@ if _HAS_SPLIT:
 else:
     _STEPS_OK = "n_cfm_timesteps" in inspect.signature(model.s3gen.inference).parameters
 _FLOW_AUTOCAST = bool(OPT_FLOW_AUTOCAST and use_autocast and _HAS_SPLIT)
-_CFM_STEPS = OPT_CFM_STEPS if (OPT_CFM_STEPS and _STEPS_OK) else None
+_CFM_STEPS_FIRST = OPT_CFM_STEPS if (OPT_CFM_STEPS and _STEPS_OK) else None
+_CFM_STEPS_REST  = OPT_CFM_STEPS_REST if (OPT_CFM_STEPS_REST and _STEPS_OK) else None
 if OPT_FLOW_AUTOCAST and use_autocast and not _HAS_SPLIT:
     print("[uyarı] Bu build'de flow/hift ayrı çağrılamıyor; flow autocast KAPATILDI "
           "(stok fp32 yol kullanılacak).")
-if OPT_CFM_STEPS and not _STEPS_OK:
+if (OPT_CFM_STEPS or OPT_CFM_STEPS_REST) and not _STEPS_OK:
     print("[uyarı] Bu build n_cfm_timesteps desteklemiyor; CFM adımı varsayılanda (10) kalacak.")
 
 def _trimmed_ref_dict(gen, seconds):
@@ -202,32 +354,75 @@ def _trimmed_ref_dict(gen, seconds):
         print(f"[uyarı] Referans kırpılamadı ({e}); tam referans kullanılacak.")
         return gen
 
-REF_DICT = _trimmed_ref_dict(model.conds.gen, OPT_REF_TRIM_SEC)
-_ref_sec = REF_DICT["prompt_token"].shape[1] / S3_TOKEN_RATE
+# İlk parça: v2 hız ayarı (TTFB yolu). Devam parçaları: tam kalite (v3).
+REF_DICT_FIRST = _trimmed_ref_dict(model.conds.gen, OPT_REF_TRIM_SEC)
+REF_DICT_REST  = _trimmed_ref_dict(model.conds.gen, OPT_REF_TRIM_SEC_REST)
+_ref_first_sec = REF_DICT_FIRST["prompt_token"].shape[1] / S3_TOKEN_RATE
+_ref_rest_sec  = REF_DICT_REST["prompt_token"].shape[1] / S3_TOKEN_RATE
+
+# T3 ağırlıklarını bf16'ya çevir (yalnız bf16/autocast yolunda anlamlı ve güvenli).
+_T3_BF16 = False
+if OPT_T3_BF16_WEIGHTS and use_autocast:
+    if autocast_dtype == torch.bfloat16:
+        try:
+            model.t3.tfmr.to(torch.bfloat16)
+            _T3_BF16 = True
+        except Exception as e:  # noqa: BLE001
+            print(f"[uyarı] T3 bf16'ya çevrilemedi ({e}); fp32 ağırlık + autocast ile devam.")
+    else:
+        print("[uyarı] GPU Ampere öncesi (fp16 yolu) — taşma riski nedeniyle T3 "
+              "ağırlıkları fp32 bırakıldı (autocast fp16 zaten aktif).")
+
 _flow_dtype_desc = (("autocast " + ("bf16" if autocast_dtype == torch.bfloat16 else "fp16"))
                     if _FLOW_AUTOCAST else "fp32 (stok)")
-OPT_DESC = f"ref {_ref_sec:.1f} sn | CFM {_CFM_STEPS or 10} adım | flow {_flow_dtype_desc}"
-print(f"[bilgi] optimizasyonlar: {OPT_DESC}   (stok: 10.0 sn | 10 adım | fp32)")
+OPT_DESC = (f"ilk[ref {_ref_first_sec:.1f} sn, CFM {_CFM_STEPS_FIRST or 10}] | "
+            f"devam[ref {_ref_rest_sec:.1f} sn, CFM {_CFM_STEPS_REST or 10}] | "
+            f"flow {_flow_dtype_desc} | ctx {OPT_CTX_TOKENS} tok | "
+            f"fade {OPT_JOINT_FADE_MS} ms | "
+            f"T3 {'bf16' if _T3_BF16 else 'fp32+autocast'} | "
+            f"ref önişleme {'AÇIK' if REF_WAV_EFF != REF_WAV else 'kapalı'}")
+print(f"[bilgi] optimizasyonlar: {OPT_DESC}")
+print( "        (stok: ref 10.0 sn | CFM 10 | fp32 | ctx yok | fade yok)")
 
 _TRIM_FADE = getattr(model.s3gen, "trim_fade", None)
 
-def vocode_chunk(new_tokens):
-    """Token parçasını sese çevirir. Split yol: CFM+encoder autocast'te,
-    HiFT fp32'de — işlem sırası ve trim_fade stok s3gen.inference ile BİREBİR.
-    Eski build: stok s3gen.inference (fp32)."""
+# Parça eki mikro-fade rampaları (CPU'da, yield edilen kopyaya uygulanır).
+_FADE_N = int(model.sr * OPT_JOINT_FADE_MS / 1000) if OPT_JOINT_FADE_MS else 0
+if _FADE_N:
+    _ramp = torch.linspace(0.0, 1.0, _FADE_N)
+    _FADE_IN  = 0.5 - 0.5 * torch.cos(math.pi * _ramp)     # 0 -> 1 (kosinüs)
+    _FADE_OUT = torch.flip(_FADE_IN, dims=[0])             # 1 -> 0
+
+def vocode_chunk(new_tokens, ctx_tokens=None, first=False):
+    """Token parçasını sese çevirir.
+    first=True  -> v2 hız ayarları (kısa referans + az CFM adımı): TTFB yolu.
+    first=False -> kalite ayarları (REF_DICT_REST + _CFM_STEPS_REST).
+    ctx_tokens  -> önceki parçanın son token'ları bağlam olarak başa eklenir,
+                   bağlama düşen ses kesilip atılır (sınır sürekliliği).
+    Split yol: CFM+encoder autocast'te, HiFT fp32'de — işlem sırası ve trim_fade
+    stok s3gen.inference ile BİREBİR. Eski build: stok s3gen.inference (fp32)."""
+    ref_dict = REF_DICT_FIRST if first else REF_DICT_REST
+    steps = _CFM_STEPS_FIRST if first else _CFM_STEPS_REST
+    has_ctx = ctx_tokens is not None and ctx_tokens.numel() > 0
+    tokens = torch.cat([ctx_tokens, new_tokens]) if has_ctx else new_tokens
+    kw = {"n_cfm_timesteps": steps} if steps else {}
     if _HAS_SPLIT:
-        kw = {"n_cfm_timesteps": _CFM_STEPS} if _CFM_STEPS else {}
         with torch.autocast(device_type=device, dtype=autocast_dtype, enabled=_FLOW_AUTOCAST):
-            mels = model.s3gen.flow_inference(new_tokens, ref_dict=REF_DICT,
+            mels = model.s3gen.flow_inference(tokens, ref_dict=ref_dict,
                                               finalize=True, **kw)
         with torch.autocast(device_type=device, enabled=False):   # HiFT fp32 -> ses güvenli
             wav, _ = model.s3gen.hift_inference(mels.float())
-        if _TRIM_FADE is not None:                                # stok inference ile birebir
+        # trim_fade CFM'in parça başı artıklarını bastırır. Bağlam varken fade
+        # bölgesi zaten atılacak bağlam sesine düşer -> uygulamak gereksiz.
+        if _TRIM_FADE is not None and not has_ctx:
             wav[:, :_TRIM_FADE.shape[0]] *= _TRIM_FADE
-        return wav
-    kw = {"n_cfm_timesteps": _CFM_STEPS} if _CFM_STEPS else {}
-    with torch.autocast(device_type=device, enabled=False):       # stok: tamamı fp32
-        wav, _ = model.s3gen.inference(speech_tokens=new_tokens, ref_dict=REF_DICT, **kw)
+    else:
+        with torch.autocast(device_type=device, enabled=False):   # stok: tamamı fp32
+            wav, _ = model.s3gen.inference(speech_tokens=tokens, ref_dict=ref_dict, **kw)
+    if has_ctx:  # bağlama düşen kısmı at (örnek/token oranıyla — hop'tan bağımsız)
+        total = ctx_tokens.numel() + new_tokens.numel()
+        cut = int(round(wav.shape[-1] * ctx_tokens.numel() / total))
+        wav = wav[:, cut:]
     return wav
 
 # ===========================================================================
@@ -289,6 +484,7 @@ def generate_stream(text, first_chunk=FIRST_CHUNK_TOKENS, chunk=CHUNK_TOKENS, st
 
         emitted_idx = 0
         next_threshold = first_chunk
+        ctx_tail = None            # bağlamlı vocode için: vocode edilmiş son token'lar
 
         for i in range(MAX_NEW_TOKENS):
             logits_step = output.logits[:, -1, :]
@@ -320,11 +516,21 @@ def generate_stream(text, first_chunk=FIRST_CHUNK_TOKENS, chunk=CHUNK_TOKENS, st
                         _sync()
                         t_decode_end = time.perf_counter()
                         stage["decode"] = t_decode_end - t_prefill_end
-                    wav = vocode_chunk(new_tokens)
+                    wav = vocode_chunk(new_tokens,
+                                       ctx_tokens=ctx_tail if OPT_CTX_TOKENS else None,
+                                       first=first_piece)
                     out = wav.squeeze(0).detach().float().cpu()              # cpu kopyası senkron
+                    # parça eki mikro-fade'i (tutma yok -> gecikme eklemez)
+                    if _FADE_N and out.numel() > 2 * _FADE_N:
+                        if not first_piece:
+                            out[:_FADE_N] *= _FADE_IN
+                        out[-_FADE_N:] *= _FADE_OUT
                     if stage is not None and first_piece:
                         stage["vocode"] = time.perf_counter() - t_decode_end
                     yield out
+                    if OPT_CTX_TOKENS:
+                        ctx_tail = (new_tokens if ctx_tail is None
+                                    else torch.cat([ctx_tail, new_tokens]))[-OPT_CTX_TOKENS:]
                 emitted_idx = len(predicted)
                 next_threshold = len(predicted) + chunk
 
@@ -340,23 +546,28 @@ def generate_stream(text, first_chunk=FIRST_CHUNK_TOKENS, chunk=CHUNK_TOKENS, st
 # ===========================================================================
 # 4. TEK CÜMLE ÖLÇÜMÜ (canlı görüşmede bir ajan repliği gibi)
 # ===========================================================================
-def speak_measure(text):
-    """Bir cümleyi stream et; TTFB, toplam süre, ses uzunluğu, birleşik ses ve
-    ilk parçanın faz bütçesini (prefill/decode/vocode) döndür."""
+def speak_measure(text, collect=False):
+    """Bir cümleyi stream et; TTFB, toplam süre, ses uzunluğu, parça sayısı,
+    (collect=True ise) birleşik ses ve ilk parçanın faz bütçesini döndür.
+    collect=False = ÖLÇÜM modu: parçalar saklanmaz, kayıt maliyeti sıfır
+    (parçalar zaten CPU'ya kopyalanmış geliyor; burada yalnızca sayaç tutulur)."""
     stage = {}
     _sync(); t0 = time.perf_counter()
     ttfb = None
-    pieces = []
+    pieces, n_samples, n_chunks = [], 0, 0
     for wav_chunk in generate_stream(text, stage=stage):
         _sync()
         now = time.perf_counter() - t0
         if ttfb is None:
             ttfb = now                          # <-- İLK ses baytı = TTFB
-        pieces.append(wav_chunk)
+        n_samples += wav_chunk.shape[-1]
+        n_chunks += 1
+        if collect:
+            pieces.append(wav_chunk)
     total = time.perf_counter() - t0
-    audio = torch.cat(pieces).unsqueeze(0) if pieces else torch.zeros(1, 1)
-    audio_s = audio.shape[-1] / model.sr
-    return ttfb, total, audio_s, len(pieces), audio, stage
+    audio = torch.cat(pieces).unsqueeze(0) if pieces else None
+    audio_s = n_samples / model.sr
+    return ttfb, total, audio_s, n_chunks, audio, stage
 
 # ===========================================================================
 # 5. ISINMA (ölçüm dışı — ilk CUDA derleme/autotune ortalamayı bozmasın)
@@ -367,28 +578,36 @@ for _ in range(WARMUP):
 
 # ===========================================================================
 # 6. TTFB ÖLÇÜMÜ (ElevenLabs/Colab ile kıyas — aynı cümle, aynı tur sayısı)
+#    Ölçüm turlarında KAYIT YAPILMAZ; örnek kaydı ölçümden SONRA ayrı koşuda.
 # ===========================================================================
-print(f"\n[TTFB kıyası] cümle: \"{BENCH_TEXT[:48]}...\"  ({RUNS} tur)")
-ttfbs, totals, audio_lens, stages, last_audio = [], [], [], [], None
+print(f"\n[TTFB kıyası] cümle: \"{BENCH_TEXT[:48]}...\"  ({RUNS} tur, kayıt kapalı)")
+ttfbs, totals, audio_lens, stages = [], [], [], []
 for i in range(RUNS):
-    ttfb, total, audio_s, nchunks, audio, stage = speak_measure(BENCH_TEXT)
-    last_audio = audio
+    ttfb, total, audio_s, nchunks, _audio, stage = speak_measure(BENCH_TEXT)
     ttfbs.append(ttfb); totals.append(total); audio_lens.append(audio_s)
     stages.append(stage)
     print(f"  tur {i+1:2}/{RUNS}: TTFB {ttfb*1000:6.0f} ms | tam {total*1000:6.0f} ms "
           f"| ses {audio_s:.2f} sn | {nchunks} parça")
 
+# --- kalite kaydı: İSTATİSTİĞE DAHİL DEĞİL, ölçüm bittikten sonra 1 ek koşu ---
 bench_wav = os.path.join(OUT_DIR, "out_bench.wav")
-if SAVE_WAV and last_audio is not None:
-    ta.save(bench_wav, last_audio.cpu(), model.sr)
+if SAVE_WAV:
+    print("[kalite kaydı] ölçüm bitti; istatistiğe dahil olmayan 1 ek koşuyla örnek alınıyor...")
+    q_ttfb, _qt, q_audio_s, _qn, q_audio, _qs = speak_measure(BENCH_TEXT, collect=True)
+    if q_audio is not None:
+        ta.save(bench_wav, q_audio.cpu(), model.sr)
+        print(f"  TTFB {q_ttfb*1000:6.0f} ms (bilgi amaçlı) | ses {q_audio_s:.2f} sn "
+              f"-> {bench_wav}")
 
 # ===========================================================================
 # 7. CANLI GÖRÜŞME SİMÜLASYONU (ajan cümle cümle konuşuyor)
+#    Amaç turn_*.wav örnekleri; TTFB'ler bilgi amaçlı (kıyas bench'i 6. bölüm).
+#    Parça toplama CPU kopyaları üzerinde yapılır -> zamanlama yolunu etkilemez.
 # ===========================================================================
 print(f"\n[canlı görüşme simülasyonu] {len(CONVERSATION)} replik")
 for idx, line in enumerate(CONVERSATION, 1):
-    ttfb, total, audio_s, nchunks, audio, _stage = speak_measure(line)
-    if SAVE_WAV:
+    ttfb, total, audio_s, nchunks, audio, _stage = speak_measure(line, collect=SAVE_WAV)
+    if SAVE_WAV and audio is not None:
         ta.save(os.path.join(OUT_DIR, f"turn_{idx}.wav"), audio.cpu(), model.sr)
     print(f"  replik {idx}: TTFB {ttfb*1000:6.0f} ms | tam {total*1000:6.0f} ms "
           f"| ses {audio_s:.2f} sn -> turn_{idx}.wav")
@@ -418,11 +637,13 @@ print(f"RTF    (median)  : {statistics.median(rtfs):.2f}   "
 print("=" * 60)
 print("KIYAS NOTU: Bu TTFB TAMAMEN yereldir (ağ yok) — saf hesaplama. ElevenLabs")
 print("TTFB'si ise ağ+sunucu+model. Local avantajın tam da bu: ağ turu yok.")
-print("Optimizasyonlar kaliteyi etkileyebilir -> TTFB'yi CER% ve out_bench.wav")
-print("ile BİRLİKTE değerlendir (README-chatterbox.md).")
+print("v3 kalite katmanları REST parçaları pahalılaştırır -> 'tam' ve RTF v2'den")
+print("yüksek olabilir; RTF < 1.0 kaldığı sürece canlı akış etkilenmez.")
+print("Kaliteyi out_bench.wav (kalite kaydı koşusu) + CER% ile değerlendir.")
 
 # ===========================================================================
 # 9. (opsiyonel) TÜRKÇE DOĞRULUK — faster-whisper CER (kaliteyi de kıyasla)
+#    Not: kalite kaydı koşusunun çıktısı (out_bench.wav) üzerinden ölçülür.
 # ===========================================================================
 if MEASURE_CER and SAVE_WAV:
     try:
